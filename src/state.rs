@@ -1,6 +1,7 @@
 use regex::Regex;
 use std::collections::HashMap;
 use std::fmt;
+use unicode_width::UnicodeWidthStr;
 
 const EXCLUDE_PATTERNS: [(&'static str, &'static str); 1] = [("bash", r"[[:cntrl:]]\[([0-9]{1,2};)?([0-9]{1,2})?m")];
 
@@ -206,11 +207,12 @@ impl<'a> State<'a> {
 
     for (y, line) in self.lines.iter().enumerate() {
       for (x, value) in line.char_indices() {
+        let display_x = line[..x].width();
         let is_in_direction = start.map_or(true, |(start_x, start_y)| {
           if reverse {
-            y < start_y || (y == start_y && x <= start_x)
+            y < start_y || (y == start_y && display_x <= start_x)
           } else {
-            y > start_y || (y == start_y && x >= start_x)
+            y > start_y || (y == start_y && display_x >= start_x)
           }
         });
         if value == character && is_in_direction {
@@ -493,6 +495,21 @@ mod tests {
 
     let backward = state.character_matches('a', true, Some((6, 0)));
     assert_eq!(backward.iter().map(|mat| mat.x).collect::<Vec<_>>(), vec![4, 0]);
+  }
+
+  #[test]
+  fn character_search_uses_display_column_for_a_mixed_width_cursor() {
+    let lines = split("dles 技术选型（用 A 还是b B？）");
+    let custom = [].to_vec();
+    let state = State::new(&lines, "abcd", &custom);
+
+    let forward = state.character_matches('A', false, Some((18, 0)));
+    assert_eq!(forward.len(), 1);
+    assert_eq!(forward[0].x, 24);
+
+    let backward = state.character_matches('A', true, Some((18, 0)));
+    assert_eq!(backward.len(), 1);
+    assert_eq!(backward[0].x, 24);
   }
 
   #[test]

@@ -69,6 +69,7 @@ pub struct Swapper<'a> {
   active_pane_id: Option<String>,
   active_pane_in_mode: bool,
   active_pane_cursor: Option<(i32, i32)>,
+  active_pane_width: Option<i32>,
   active_pane_height: Option<i32>,
   active_pane_scroll_position: Option<i32>,
   active_pane_zoomed: Option<bool>,
@@ -111,6 +112,7 @@ impl<'a> Swapper<'a> {
       active_pane_id: None,
       active_pane_in_mode: false,
       active_pane_cursor: None,
+      active_pane_width: None,
       active_pane_height: None,
       active_pane_scroll_position: None,
       active_pane_zoomed: None,
@@ -126,7 +128,7 @@ impl<'a> Swapper<'a> {
       "tmux",
       "list-panes",
       "-F",
-      "#{pane_id}:#{?pane_in_mode,1,0}:#{pane_height}:#{scroll_position}:#{window_zoomed_flag}:#{?pane_active,active,nope}",
+      "#{pane_id}:#{?pane_in_mode,1,0}:#{pane_height}:#{scroll_position}:#{window_zoomed_flag}:#{?pane_active,active,nope}:#{pane_width}",
     ];
 
     let output = self
@@ -181,6 +183,13 @@ impl<'a> Swapper<'a> {
       .parse()
       .expect("Unable to retrieve pane height");
 
+    let pane_width = active_pane
+      .get(6)
+      .unwrap_or(&"0")
+      .parse()
+      .expect("Unable to retrieve pane width");
+
+    self.active_pane_width = Some(pane_width);
     self.active_pane_height = Some(pane_height);
 
     if self.active_pane_in_mode {
@@ -292,8 +301,11 @@ impl<'a> Swapper<'a> {
       "".to_string()
     };
 
+    let capture_flags = if self.jump { "-p" } else { "-J -p" };
+
     let pane_command = format!(
-        "tmux capture-pane -J -t {active_pane_id} -p{scroll_params} | tail -n {height} | {dir}/target/release/thumbs --ready-signal {ready_signal} -f '%U:%P:%X:%Y:%H' -t {tmp} {args}{jump_args}; tmux swap-pane -t {active_pane_id}; {zoom_command} tmux wait-for -S {signal}",
+        "tmux capture-pane {capture_flags} -t {active_pane_id}{scroll_params} | tail -n {height} | {dir}/target/release/thumbs --ready-signal {ready_signal} -f '%U:%P:%X:%Y:%H' -t {tmp} {args}{jump_args}; tmux swap-pane -t {active_pane_id}; {zoom_command} tmux wait-for -S {signal}",
+        capture_flags = capture_flags,
         active_pane_id = active_pane_id,
         scroll_params = scroll_params,
         height = self.active_pane_height.unwrap_or(i32::MAX),
@@ -344,6 +356,24 @@ impl<'a> Swapper<'a> {
       .collect();
 
     self.executor.execute(params);
+  }
+
+  pub fn resize_thumbs_window(&mut self) {
+    let thumbs_pane_id = self.thumbs_pane_id.as_ref().unwrap();
+    let width = self.active_pane_width.unwrap();
+    let height = self.active_pane_height.unwrap();
+    let resize_command = vec![
+      "tmux".to_string(),
+      "resize-window".to_string(),
+      "-t".to_string(),
+      thumbs_pane_id.to_string(),
+      "-x".to_string(),
+      width.to_string(),
+      "-y".to_string(),
+      height.to_string(),
+    ];
+
+    self.executor.execute(resize_command);
   }
 
   pub fn resize_pane(&mut self) {
@@ -451,9 +481,27 @@ impl<'a> Swapper<'a> {
 
   fn move_cursor_to(&mut self, x: i32, y: i32) {
     let pane_id = self.active_pane_id.clone().unwrap();
-    let (_, current_y) = self.active_pane_cursor.unwrap();
+    let captured_scroll = self.active_pane_scroll_position.unwrap_or(0);
 
-    if let Some((direction, count)) = Self::cursor_delta(current_y, y, "cursor-down", "cursor-up") {
+    let current_position = self.executor.execute(vec![
+      "tmux".to_string(),
+      "display-message".to_string(),
+      "-p".to_string(),
+      "-t".to_string(),
+      pane_id.clone(),
+      "#{copy_cursor_x}:#{copy_cursor_y}:#{scroll_position}".to_string(),
+    ]);
+    let current_position: Vec<i32> = current_position
+      .trim()
+      .split(':')
+      .map(|value| value.parse().expect("Unable to retrieve copy cursor position"))
+      .collect();
+    let current_y = *current_position.get(1).expect("Unable to retrieve copy cursor row");
+    let current_scroll = *current_position.get(2).expect("Unable to retrieve copy scroll position");
+    let current_absolute_y = current_y - current_scroll;
+    let target_absolute_y = y - captured_scroll;
+
+    if let Some((direction, count)) = Self::cursor_delta(current_absolute_y, target_absolute_y, "cursor-down", "cursor-up") {
       self.executor.execute(Self::shell_cursor_command(&pane_id, count, direction));
     }
 
@@ -466,6 +514,9 @@ impl<'a> Swapper<'a> {
 
   pub fn execute_command(&mut self) {
     let content = self.content.clone().unwrap();
+    if content.trim().is_empty() {
+      return;
+    }
     let items: Vec<&str> = content.split('\n').collect();
 
     if self.jump {
@@ -710,6 +761,60 @@ mod tests {
   }
 
   #[test]
+  fn resize_thumbs_window_matches_source_pane_geometry() {
+    let mut executor = TestShell::new(vec!["".to_string()]);
+    let mut swapper = Swapper::new(
+      Box::new(&mut executor),
+      "".to_string(),
+      "".to_string(),
+      "".to_string(),
+      "".to_string(),
+      "".to_string(),
+      true,
+      Some("A".to_string()),
+      false,
+      false,
+    );
+    swapper.thumbs_pane_id = Some("%2".to_string());
+    swapper.active_pane_width = Some(80);
+    swapper.active_pane_height = Some(15);
+
+    swapper.resize_thumbs_window();
+
+    assert_eq!(
+      executor.last_executed().unwrap(),
+      vec!["tmux", "resize-window", "-t", "%2", "-x", "80", "-y", "15"]
+    );
+  }
+
+  #[test]
+  fn jump_capture_preserves_wrapped_screen_rows() {
+    let mut executor = TestShell::new(vec!["%100".to_string(), "".to_string()]);
+    let mut swapper = Swapper::new(
+      Box::new(&mut executor),
+      "/tmp/thumbs".to_string(),
+      "".to_string(),
+      "".to_string(),
+      "".to_string(),
+      "".to_string(),
+      true,
+      Some("A".to_string()),
+      false,
+      false,
+    );
+    swapper.active_pane_id = Some("%1".to_string());
+    swapper.active_pane_cursor = Some((0, 0));
+    swapper.active_pane_height = Some(5);
+    swapper.active_pane_zoomed = Some(false);
+
+    swapper.execute_thumbs();
+
+    let command = executor.executed.get(1).unwrap().get(8).unwrap();
+    assert!(command.contains("capture-pane -p"));
+    assert!(!command.contains("capture-pane -J"));
+  }
+
+  #[test]
   fn quoted_execution() {
     let last_command_outputs = vec!["Blah blah blah, the ignored user script output".to_string()];
     let mut executor = TestShell::new(last_command_outputs);
@@ -830,7 +935,7 @@ mod tests {
 
   #[test]
   fn jump_selection_starts_the_line_then_moves_logical_columns() {
-    let mut executor = TestShell::new(vec!["".to_string(), "".to_string(), "".to_string()]);
+    let mut executor = TestShell::new(vec!["".to_string(), "".to_string(), "".to_string(), "0:0:0".to_string()]);
     let mut swapper = Swapper::new(
       Box::new(&mut executor),
       "".to_string(),
@@ -845,19 +950,77 @@ mod tests {
     );
     swapper.active_pane_id = Some("%1".to_string());
     swapper.active_pane_cursor = Some((0, 0));
+    swapper.active_pane_scroll_position = Some(0);
     swapper.content = Some("false:character:12:2:A".to_string());
 
     swapper.execute_command();
 
-    assert_eq!(executor.executed.len(), 3);
-    assert_eq!(executor.executed.get(0).unwrap().get(5).unwrap(), "2");
-    assert_eq!(executor.executed.get(0).unwrap().get(6).unwrap(), "cursor-down");
+    assert_eq!(executor.executed.len(), 4);
     assert_eq!(
-      executor.executed.get(1).unwrap(),
+      executor.executed.get(0).unwrap().get(5).unwrap(),
+      "#{copy_cursor_x}:#{copy_cursor_y}:#{scroll_position}"
+    );
+    assert_eq!(executor.executed.get(1).unwrap().get(5).unwrap(), "2");
+    assert_eq!(executor.executed.get(1).unwrap().get(6).unwrap(), "cursor-down");
+    assert_eq!(
+      executor.executed.get(2).unwrap(),
       &vec!["tmux", "send-keys", "-t", "%1", "-X", "start-of-line"]
     );
+    assert_eq!(executor.executed.get(3).unwrap().get(5).unwrap(), "12");
+    assert_eq!(executor.executed.get(3).unwrap().get(6).unwrap(), "cursor-right");
+  }
+
+  #[test]
+  fn jump_movement_reanchors_after_pane_resize() {
+    let mut executor = TestShell::new(vec!["".to_string(), "".to_string(), "2:1:0".to_string()]);
+    let mut swapper = Swapper::new(
+      Box::new(&mut executor),
+      "".to_string(),
+      "".to_string(),
+      "".to_string(),
+      "".to_string(),
+      "".to_string(),
+      true,
+      Some("A".to_string()),
+      false,
+      false,
+    );
+    swapper.active_pane_id = Some("%1".to_string());
+    swapper.active_pane_cursor = Some((2, 14));
+    swapper.active_pane_scroll_position = Some(13);
+    swapper.content = Some("false:character:12:14:A".to_string());
+
+    swapper.execute_command();
+
+    assert_eq!(executor.executed.len(), 3);
+    assert_eq!(
+      executor.executed.get(0).unwrap().get(5).unwrap(),
+      "#{copy_cursor_x}:#{copy_cursor_y}:#{scroll_position}"
+    );
+    assert_eq!(executor.executed.get(1).unwrap().get(5).unwrap(), "start-of-line");
     assert_eq!(executor.executed.get(2).unwrap().get(5).unwrap(), "12");
-    assert_eq!(executor.executed.get(2).unwrap().get(6).unwrap(), "cursor-right");
+  }
+
+  #[test]
+  fn empty_jump_selection_does_not_panic_during_cleanup() {
+    let mut executor = TestShell::new(vec![]);
+    let mut swapper = Swapper::new(
+      Box::new(&mut executor),
+      "".to_string(),
+      "".to_string(),
+      "".to_string(),
+      "".to_string(),
+      "".to_string(),
+      true,
+      Some("A".to_string()),
+      false,
+      false,
+    );
+    swapper.content = Some("".to_string());
+
+    swapper.execute_command();
+
+    assert!(executor.executed.is_empty());
   }
 
   #[test]
@@ -983,6 +1146,7 @@ fn main() -> std::io::Result<()> {
 
   swapper.capture_active_pane();
   swapper.execute_thumbs();
+  swapper.resize_thumbs_window();
   // Keep the original pane visible until the hidden UI has painted its first frame.
   swapper.wait_ready();
   swapper.swap_panes();
