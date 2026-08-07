@@ -9,7 +9,7 @@ use termion::raw::IntoRawMode;
 use termion::screen::AlternateScreen;
 use termion::{color, cursor};
 
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Chosen {
@@ -109,7 +109,7 @@ impl<'a> View<'a> {
 
   fn choose(&mut self, text: String, pattern: String, x: i32, y: i32, upcase: bool) {
     let line = &self.state.lines[y as usize];
-    let column = Self::display_column(line, x as usize);
+    let column = Self::cursor_column(line, x as usize);
 
     self.chosen.push(Chosen {
       text,
@@ -122,6 +122,13 @@ impl<'a> View<'a> {
 
   fn display_column(line: &str, byte_offset: usize) -> usize {
     line[..byte_offset].width()
+  }
+
+  fn cursor_column(line: &str, byte_offset: usize) -> usize {
+    line[..byte_offset]
+      .chars()
+      .filter(|character| character.width().unwrap_or(0) > 0)
+      .count()
   }
 
   fn render(&self, stdout: &mut dyn Write, typed_hint: &str) -> () {
@@ -400,5 +407,33 @@ mod tests {
   fn display_column_handles_unicode_width() {
     assert_eq!(View::display_column("écho", 2), 1);
     assert_eq!(View::display_column("你a", 3), 2);
+  }
+
+  #[test]
+  fn selected_column_counts_tmux_cursor_movements() {
+    let lines = split("中a");
+    let custom = [].to_vec();
+    let mut state = state::State::new(&lines, "abcd", &custom);
+    let mut view = View {
+      state: &mut state,
+      skip: 0,
+      multi: false,
+      contrast: false,
+      position: &"",
+      matches: vec![],
+      select_foreground_color: colors::get_color("default"),
+      select_background_color: colors::get_color("default"),
+      multi_foreground_color: colors::get_color("default"),
+      multi_background_color: colors::get_color("default"),
+      foreground_color: colors::get_color("default"),
+      background_color: colors::get_color("default"),
+      hint_background_color: colors::get_color("default"),
+      hint_foreground_color: colors::get_color("default"),
+      chosen: vec![],
+    };
+
+    view.choose("a".to_string(), "character".to_string(), 3, 0, false);
+
+    assert_eq!(view.chosen[0].x, 1);
   }
 }

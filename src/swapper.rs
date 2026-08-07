@@ -438,31 +438,29 @@ impl<'a> Swapper<'a> {
     ]
   }
 
+  fn start_of_line_command(pane_id: &str) -> Vec<String> {
+    vec![
+      "tmux".to_string(),
+      "send-keys".to_string(),
+      "-t".to_string(),
+      pane_id.to_string(),
+      "-X".to_string(),
+      "start-of-line".to_string(),
+    ]
+  }
+
   fn move_cursor_to(&mut self, x: i32, y: i32) {
     let pane_id = self.active_pane_id.clone().unwrap();
-    let (current_x, current_y) = self.active_pane_cursor.unwrap();
+    let (_, current_y) = self.active_pane_cursor.unwrap();
 
     if let Some((direction, count)) = Self::cursor_delta(current_y, y, "cursor-down", "cursor-up") {
       self.executor.execute(Self::shell_cursor_command(&pane_id, count, direction));
     }
 
-    let current_position = self.executor.execute(vec![
-      "tmux".to_string(),
-      "display-message".to_string(),
-      "-p".to_string(),
-      "-t".to_string(),
-      pane_id.clone(),
-      "#{copy_cursor_x}:#{copy_cursor_y}".to_string(),
-    ]);
-    let current_position: Vec<i32> = current_position
-      .trim()
-      .split(':')
-      .map(|value| value.parse().expect("Unable to retrieve copy cursor position"))
-      .collect();
-    let current_x = *current_position.get(0).unwrap_or(&current_x);
+    self.executor.execute(Self::start_of_line_command(&pane_id));
 
-    if let Some((direction, count)) = Self::cursor_delta(current_x, x, "cursor-right", "cursor-left") {
-      self.executor.execute(Self::shell_cursor_command(&pane_id, count, direction));
+    if x > 0 {
+      self.executor.execute(Self::shell_cursor_command(&pane_id, x, "cursor-right"));
     }
   }
 
@@ -831,8 +829,8 @@ mod tests {
   }
 
   #[test]
-  fn jump_selection_moves_vertically_then_uses_refreshed_column() {
-    let mut executor = TestShell::new(vec!["".to_string(), "2:2".to_string(), "".to_string()]);
+  fn jump_selection_starts_the_line_then_moves_logical_columns() {
+    let mut executor = TestShell::new(vec!["".to_string(), "".to_string(), "".to_string()]);
     let mut swapper = Swapper::new(
       Box::new(&mut executor),
       "".to_string(),
@@ -847,15 +845,18 @@ mod tests {
     );
     swapper.active_pane_id = Some("%1".to_string());
     swapper.active_pane_cursor = Some((0, 0));
-    swapper.content = Some("false:character:5:2:x".to_string());
+    swapper.content = Some("false:character:12:2:A".to_string());
 
     swapper.execute_command();
 
     assert_eq!(executor.executed.len(), 3);
     assert_eq!(executor.executed.get(0).unwrap().get(5).unwrap(), "2");
     assert_eq!(executor.executed.get(0).unwrap().get(6).unwrap(), "cursor-down");
-    assert_eq!(executor.executed.get(1).unwrap().get(0).unwrap(), "tmux");
-    assert_eq!(executor.executed.get(2).unwrap().get(5).unwrap(), "3");
+    assert_eq!(
+      executor.executed.get(1).unwrap(),
+      &vec!["tmux", "send-keys", "-t", "%1", "-X", "start-of-line"]
+    );
+    assert_eq!(executor.executed.get(2).unwrap().get(5).unwrap(), "12");
     assert_eq!(executor.executed.get(2).unwrap().get(6).unwrap(), "cursor-right");
   }
 
