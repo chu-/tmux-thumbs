@@ -1,6 +1,7 @@
 use super::*;
 use std::char;
 use std::io::{stdout, Read, Write};
+use std::process::Command;
 use termion::async_stdin;
 use termion::event::Key;
 use termion::input::TermRead;
@@ -178,8 +179,23 @@ impl<'a> View<'a> {
     stdout.flush().unwrap();
   }
 
-  fn listen(&mut self, stdin: &mut dyn Read, stdout: &mut dyn Write) -> CaptureEvent {
+  fn signal_ready(ready_signal: Option<&str>) {
+    if let Some(signal) = ready_signal {
+      Command::new("tmux")
+        .args(&["wait-for", "-S", signal])
+        .status()
+        .expect("Unable to signal tmux readiness");
+    }
+  }
+
+  fn listen(
+    &mut self,
+    stdin: &mut dyn Read,
+    stdout: &mut dyn Write,
+    ready_signal: Option<&str>,
+  ) -> CaptureEvent {
     if self.matches.is_empty() {
+      Self::signal_ready(ready_signal);
       return CaptureEvent::Exit;
     }
 
@@ -193,6 +209,7 @@ impl<'a> View<'a> {
       .clone();
 
     self.render(stdout, &typed_hint);
+    Self::signal_ready(ready_signal);
 
     loop {
       match stdin.keys().next() {
@@ -293,11 +310,11 @@ impl<'a> View<'a> {
     CaptureEvent::Exit
   }
 
-  pub fn present(&mut self) -> Vec<(String, bool)> {
+  pub fn present(&mut self, ready_signal: Option<&str>) -> Vec<(String, bool)> {
     let mut stdin = async_stdin();
     let mut stdout = AlternateScreen::from(stdout().into_raw_mode().unwrap());
 
-    let hints = match self.listen(&mut stdin, &mut stdout) {
+    let hints = match self.listen(&mut stdin, &mut stdout, ready_signal) {
       CaptureEvent::Exit => vec![],
       CaptureEvent::Hint => self.chosen.clone(),
     };

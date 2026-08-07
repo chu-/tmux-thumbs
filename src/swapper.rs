@@ -68,6 +68,7 @@ pub struct Swapper<'a> {
   active_pane_zoomed: Option<bool>,
   thumbs_pane_id: Option<String>,
   content: Option<String>,
+  ready_signal: String,
   signal: String,
 }
 
@@ -83,7 +84,8 @@ impl<'a> Swapper<'a> {
     let since_the_epoch = SystemTime::now()
       .duration_since(UNIX_EPOCH)
       .expect("Time went backwards");
-    let signal = format!("thumbs-finished-{}", since_the_epoch.as_secs());
+    let signal = format!("thumbs-finished-{}-{}", since_the_epoch.as_secs(), std::process::id());
+    let ready_signal = format!("thumbs-ready-{}-{}", since_the_epoch.as_secs(), std::process::id());
 
     Swapper {
       executor,
@@ -98,6 +100,7 @@ impl<'a> Swapper<'a> {
       active_pane_zoomed: None,
       thumbs_pane_id: None,
       content: None,
+      ready_signal,
       signal,
     }
   }
@@ -215,12 +218,13 @@ impl<'a> Swapper<'a> {
     };
 
     let pane_command = format!(
-        "tmux capture-pane -J -t {active_pane_id} -p{scroll_params} | tail -n {height} | {dir}/target/release/thumbs -f '%U:%H' -t {tmp} {args}; tmux swap-pane -t {active_pane_id}; {zoom_command} tmux wait-for -S {signal}",
+        "tmux capture-pane -J -t {active_pane_id} -p{scroll_params} | tail -n {height} | {dir}/target/release/thumbs --ready-signal {ready_signal} -f '%U:%H' -t {tmp} {args}; tmux swap-pane -t {active_pane_id}; {zoom_command} tmux wait-for -S {signal}",
         active_pane_id = active_pane_id,
         scroll_params = scroll_params,
         height = self.active_pane_height.unwrap_or(i32::MAX),
         dir = self.dir,
         tmp = TMP_FILE,
+        ready_signal = self.ready_signal,
         args = args.join(" "),
         zoom_command = zoom_command,
         signal = self.signal
@@ -282,6 +286,13 @@ impl<'a> Swapper<'a> {
       .filter(|&s| !s.is_empty())
       .map(|arg| arg.to_string())
       .collect();
+
+    self.executor.execute(params);
+  }
+
+  pub fn wait_ready(&mut self) {
+    let wait_command = vec!["tmux", "wait-for", self.ready_signal.as_str()];
+    let params = wait_command.iter().map(|arg| arg.to_string()).collect();
 
     self.executor.execute(params);
   }
@@ -589,6 +600,8 @@ fn main() -> std::io::Result<()> {
 
   swapper.capture_active_pane();
   swapper.execute_thumbs();
+  // Keep the original pane visible until the hidden UI has painted its first frame.
+  swapper.wait_ready();
   swapper.swap_panes();
   swapper.resize_pane();
   swapper.wait_thumbs();

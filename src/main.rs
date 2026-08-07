@@ -136,6 +136,12 @@ fn app_args<'a>() -> clap::ArgMatches<'a> {
         .short("t")
         .takes_value(true),
     )
+    .arg(
+      Arg::with_name("ready_signal")
+        .help("Signals tmux after the first render")
+        .long("ready-signal")
+        .takes_value(true),
+    )
     .get_matches()
 }
 
@@ -145,6 +151,7 @@ fn main() {
   let alphabet = args.value_of("alphabet").unwrap();
   let position = args.value_of("position").unwrap();
   let target = args.value_of("target");
+  let ready_signal = args.value_of("ready_signal");
   let multi = args.is_present("multi");
   let reverse = args.is_present("reverse");
   let unique = args.is_present("unique");
@@ -192,7 +199,7 @@ fn main() {
       hint_background_color,
     );
 
-    viewbox.present()
+    viewbox.present(ready_signal)
   };
 
   if !selected.is_empty() {
