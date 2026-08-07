@@ -142,11 +142,13 @@ impl<'a> Swapper<'a> {
       .expect("Unable to find active pane");
 
     let pane_id = active_pane.get(0).unwrap();
+    let active_pane_was_in_mode = active_pane.get(1).unwrap() == &"1";
 
     self.active_pane_id = Some(pane_id.to_string());
+    self.active_pane_in_mode = active_pane_was_in_mode;
 
     if self.jump {
-      if active_pane.get(1).unwrap() != &"1" {
+      if !active_pane_was_in_mode {
         self.executor.execute(vec![
           "tmux".to_string(),
           "copy-mode".to_string(),
@@ -181,14 +183,21 @@ impl<'a> Swapper<'a> {
 
     self.active_pane_height = Some(pane_height);
 
-    self.active_pane_in_mode = self.active_pane_in_mode || active_pane.get(1).unwrap() == &"1";
-
     if self.active_pane_in_mode {
-      let pane_scroll_position = active_pane
-        .get(3)
-        .unwrap()
-        .parse()
-        .expect("Unable to retrieve pane scroll");
+      let pane_scroll_position = if active_pane_was_in_mode {
+        active_pane.get(3).unwrap().to_string()
+      } else {
+        self.executor.execute(vec![
+          "tmux".to_string(),
+          "display-message".to_string(),
+          "-p".to_string(),
+          "-t".to_string(),
+          pane_id.to_string(),
+          "#{scroll_position}".to_string(),
+        ])
+      }
+      .parse()
+      .expect("Unable to retrieve pane scroll");
 
       self.active_pane_scroll_position = Some(pane_scroll_position);
     }
@@ -640,6 +649,35 @@ mod tests {
     swapper.capture_active_pane();
 
     assert_eq!(swapper.active_pane_id.unwrap(), "%97");
+  }
+
+  #[test]
+  fn jump_mode_enters_copy_mode_from_a_live_pane() {
+    let outputs = vec![
+      "0".to_string(),
+      "3:4".to_string(),
+      "".to_string(),
+      "%97:0:24::0:active\n".to_string(),
+    ];
+    let mut executor = TestShell::new(outputs);
+    let mut swapper = Swapper::new(
+      Box::new(&mut executor),
+      "".to_string(),
+      "".to_string(),
+      "".to_string(),
+      "".to_string(),
+      "".to_string(),
+      true,
+      Some("a".to_string()),
+      false,
+      false,
+    );
+
+    swapper.capture_active_pane();
+
+    assert!(swapper.active_pane_in_mode);
+    assert_eq!(swapper.active_pane_cursor, Some((3, 4)));
+    assert_eq!(swapper.active_pane_scroll_position, Some(0));
   }
 
   #[test]
