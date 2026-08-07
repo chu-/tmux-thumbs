@@ -148,7 +148,7 @@ Character jumping can be started from copy-mode with a binding such as:
 ```
 bind-key -T copy-mode-vi f command-prompt -1 -p "character:" {
   set-option -g @tmp-thumbs-character "%%%"
-  run-shell -b '~/.tmux/plugins/tmux-thumbs/tmux-thumbs.sh --jump --character #{q:@tmp-thumbs-character}'
+  run-shell -b '~/.tmux/plugins/tmux-thumbs/tmux-thumbs.sh --jump --character "$(tmux show-option -gqv @tmp-thumbs-character)"'
 }
 ```
 
