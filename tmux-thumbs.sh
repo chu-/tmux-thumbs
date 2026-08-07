@@ -31,6 +31,7 @@ function get-opt-arg() {
   elif [ "${type}" = boolean ]; then
     case "${value}" in
       1|on|yes|true|enabled) echo "--${opt}" ;;
+      *) return 1 ;;
     esac
   else
     return 1
