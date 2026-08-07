@@ -11,6 +11,13 @@ use termion::{color, cursor};
 
 use unicode_width::UnicodeWidthStr;
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct Chosen {
+  pub text: String,
+  pub upcase: bool,
+  pub pattern: String,
+}
+
 pub struct View<'a> {
   state: &'a mut state::State<'a>,
   skip: usize,
@@ -26,7 +33,7 @@ pub struct View<'a> {
   background_color: Box<dyn color::Color>,
   hint_background_color: Box<dyn color::Color>,
   hint_foreground_color: Box<dyn color::Color>,
-  chosen: Vec<(String, bool)>,
+  chosen: Vec<Chosen>,
 }
 
 enum CaptureEvent {
@@ -93,6 +100,14 @@ impl<'a> View<'a> {
     }
   }
 
+  fn choose(&mut self, text: String, pattern: String, upcase: bool) {
+    self.chosen.push(Chosen {
+      text,
+      upcase,
+      pattern,
+    });
+  }
+
   fn render(&self, stdout: &mut dyn Write, typed_hint: &str) -> () {
     write!(stdout, "{}", cursor::Hide).unwrap();
 
@@ -107,7 +122,7 @@ impl<'a> View<'a> {
     let selected = self.matches.get(self.skip);
 
     for mat in self.matches.iter() {
-      let chosen_hint = self.chosen.iter().any(|(hint, _)| hint == mat.text);
+      let chosen_hint = self.chosen.iter().any(|chosen| chosen.text == mat.text);
 
       let selected_color = if chosen_hint {
         &self.multi_foreground_color
@@ -243,7 +258,9 @@ impl<'a> View<'a> {
                   match ch {
                     '\n' => match self.matches.iter().enumerate().find(|&h| h.0 == self.skip) {
                       Some(hm) => {
-                        self.chosen.push((hm.1.text.to_string(), false));
+                        let text = hm.1.text.to_string();
+                        let pattern = hm.1.pattern.to_string();
+                        self.choose(text, pattern, false);
 
                         if !self.multi {
                           return CaptureEvent::Hint;
@@ -270,7 +287,9 @@ impl<'a> View<'a> {
 
                       match selection {
                         Some(mat) => {
-                          self.chosen.push((mat.text.to_string(), key != lower_key));
+                          let text = mat.text.to_string();
+                          let pattern = mat.pattern.to_string();
+                          self.choose(text, pattern, key != lower_key);
 
                           if self.multi {
                             typed_hint.clear();
@@ -310,7 +329,7 @@ impl<'a> View<'a> {
     CaptureEvent::Exit
   }
 
-  pub fn present(&mut self, ready_signal: Option<&str>) -> Vec<(String, bool)> {
+  pub fn present(&mut self, ready_signal: Option<&str>) -> Vec<Chosen> {
     let mut stdin = async_stdin();
     let mut stdout = AlternateScreen::from(stdout().into_raw_mode().unwrap());
 

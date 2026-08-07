@@ -93,8 +93,10 @@ NOTE: for changes to take effect, you'll need to source again your `.tmux.conf` 
 * [@thumbs-unique](#thumbs-unique)
 * [@thumbs-position](#thumbs-position)
 * [@thumbs-regexp-N](#thumbs-regexp-N)
+* [@thumbs-url-regexp-N](#thumbs-url-regexp-N)
 * [@thumbs-command](#thumbs-command)
 * [@thumbs-upcase-command](#thumbs-upcase-command)
+* [@thumbs-url-command](#thumbs-url-command)
 * [@thumbs-multi-command](#thumbs-multi-command)
 * [@thumbs-bg-color](#thumbs-bg-color)
 * [@thumbs-fg-color](#thumbs-fg-color)
@@ -188,6 +190,19 @@ set -g @thumbs-regexp-4 "Vlan\\d+" # alternative method of defining regexp
 set -g @thumbs-regexp-5 Vlan\\d+ # alternative method of defining regexp
 ```
 
+### @thumbs-url-regexp-N
+
+Add extra patterns that should be treated as links. An uppercase hint for these
+matches uses [@thumbs-url-command](#thumbs-url-command); a lowercase hint keeps
+the normal copy behavior.
+
+For example:
+
+```
+set -g @thumbs-url-regexp-1 'notes://[^ ]+'
+set -g @thumbs-url-regexp-2 'myapp://[^ ]+'
+```
+
 ### @thumbs-command
 
 `default: 'tmux set-buffer -- {} && tmux display-message \"Copied {}\"'`
@@ -210,6 +225,25 @@ For example:
 
 ```
 set -g @thumbs-upcase-command 'echo -n {} | pbcopy'
+```
+
+### @thumbs-url-command
+
+`default on macOS: 'tmux set-buffer -- "{}" && open "{}"'`
+
+Choose which command executes when you press an uppercase hint for a URL. URL
+matches include `http://`, `https://`, and `file://` links, Markdown URLs, and
+patterns added with [@thumbs-url-regexp-N](#thumbs-url-regexp-N). The selected
+URL is copied and opened with the macOS default application by default.
+
+Lowercase URL hints still use [@thumbs-command](#thumbs-command). Uppercase
+non-URL hints use [@thumbs-upcase-command](#thumbs-upcase-command), and
+multi-selection continues to use [@thumbs-multi-command](#thumbs-multi-command).
+
+For example:
+
+```
+set -g @thumbs-url-command 'tmux set-buffer -- "{}" && open "{}"'
 ```
 
 ### @thumbs-multi-command
@@ -452,12 +486,13 @@ OPTIONS:
         --bg-color <background_color>                  Sets the background color for matches [default: black]
         --fg-color <foreground_color>                  Sets the foregroud color for matches [default: green]
     -f, --format <format>
-            Specifies the out format for the picked hint. (%U: Upcase, %H: Hint) [default: %H]
+            Specifies the out format for the picked hint. (%U: Upcase, %H: Hint, %P: Pattern) [default: %H]
 
         --hint-bg-color <hint_background_color>        Sets the background color for hints [default: black]
         --hint-fg-color <hint_foreground_color>        Sets the foregroud color for hints [default: yellow]
     -p, --position <position>                          Hint position [default: left]
     -x, --regexp <regexp>...                           Use this regexp as extra pattern to match
+        --url-regexp <url_regexp>...                   Use this regexp as an extra URL pattern to match
         --select-bg-color <select_background_color>    Sets the background color for selection [default: black]
         --select-fg-color <select_foreground_color>    Sets the foreground color for selection [default: blue]
         --multi-bg-color <multi_background_color>      Sets the background color for a multi selected item [default: black]

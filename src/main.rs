@@ -37,7 +37,7 @@ fn app_args<'a>() -> clap::ArgMatches<'a> {
     )
     .arg(
       Arg::with_name("format")
-        .help("Specifies the out format for the picked hint. (%U: Upcase, %H: Hint)")
+        .help("Specifies the out format for the picked hint. (%U: Upcase, %H: Hint, %P: Pattern)")
         .long("format")
         .short("f")
         .default_value("%H"),
@@ -124,6 +124,13 @@ fn app_args<'a>() -> clap::ArgMatches<'a> {
         .multiple(true),
     )
     .arg(
+      Arg::with_name("url_regexp")
+        .help("Use this regexp as an extra URL pattern to match")
+        .long("url-regexp")
+        .takes_value(true)
+        .multiple(true),
+    )
+    .arg(
       Arg::with_name("contrast")
         .help("Put square brackets around hint for visibility")
         .long("contrast")
@@ -161,6 +168,11 @@ fn main() {
   } else {
     [].to_vec()
   };
+  let url_regexp = if let Some(items) = args.values_of("url_regexp") {
+    items.collect::<Vec<_>>()
+  } else {
+    [].to_vec()
+  };
 
   let foreground_color = colors::get_color(args.value_of("foreground_color").unwrap());
   let background_color = colors::get_color(args.value_of("background_color").unwrap());
@@ -180,6 +192,7 @@ fn main() {
   let lines = output.split('\n').collect::<Vec<&str>>();
 
   let mut state = state::State::new(&lines, alphabet, &regexp);
+  state.set_url_regexp(&url_regexp);
 
   let selected = {
     let mut viewbox = view::View::new(
@@ -205,13 +218,14 @@ fn main() {
   if !selected.is_empty() {
     let output = selected
       .iter()
-      .map(|(text, upcase)| {
-        let upcase_value = if *upcase { "true" } else { "false" };
+      .map(|selection| {
+        let upcase_value = if selection.upcase { "true" } else { "false" };
 
         let mut output = format.to_string();
 
         output = str::replace(&output, "%U", upcase_value);
-        output = str::replace(&output, "%H", text.as_str());
+        output = str::replace(&output, "%P", selection.pattern.as_str());
+        output = str::replace(&output, "%H", selection.text.as_str());
         output
       })
       .collect::<Vec<_>>()

@@ -61,6 +61,7 @@ pub struct Swapper<'a> {
   command: String,
   upcase_command: String,
   multi_command: String,
+  url_command: String,
   osc52: bool,
   active_pane_id: Option<String>,
   active_pane_height: Option<i32>,
@@ -79,6 +80,7 @@ impl<'a> Swapper<'a> {
     command: String,
     upcase_command: String,
     multi_command: String,
+    url_command: String,
     osc52: bool,
   ) -> Swapper {
     let since_the_epoch = SystemTime::now()
@@ -93,6 +95,7 @@ impl<'a> Swapper<'a> {
       command,
       upcase_command,
       multi_command,
+      url_command,
       osc52,
       active_pane_id: None,
       active_pane_height: None,
@@ -190,6 +193,10 @@ impl<'a> Swapper<'a> {
             return vec![format!("--{}", name), format!("'{}'", value)];
           }
 
+          if name.starts_with("url-regexp") {
+            return vec!["--url-regexp".to_string(), format!("'{}'", value.replace("\\\\", "\\"))];
+          }
+
           if name.starts_with("regexp") {
             return vec!["--regexp".to_string(), format!("'{}'", value.replace("\\\\", "\\"))];
           }
@@ -218,7 +225,7 @@ impl<'a> Swapper<'a> {
     };
 
     let pane_command = format!(
-        "tmux capture-pane -J -t {active_pane_id} -p{scroll_params} | tail -n {height} | {dir}/target/release/thumbs --ready-signal {ready_signal} -f '%U:%H' -t {tmp} {args}; tmux swap-pane -t {active_pane_id}; {zoom_command} tmux wait-for -S {signal}",
+        "tmux capture-pane -J -t {active_pane_id} -p{scroll_params} | tail -n {height} | {dir}/target/release/thumbs --ready-signal {ready_signal} -f '%U:%P:%H' -t {tmp} {args}; tmux swap-pane -t {active_pane_id}; {zoom_command} tmux wait-for -S {signal}",
         active_pane_id = active_pane_id,
         scroll_params = scroll_params,
         height = self.active_pane_height.unwrap_or(i32::MAX),
@@ -320,6 +327,26 @@ impl<'a> Swapper<'a> {
 
   pub fn send_osc52(&mut self) {}
 
+  fn is_url_pattern(pattern: &str) -> bool {
+    pattern == "url" || pattern == "markdown_url" || pattern == "url_custom"
+  }
+
+  fn command_for_selection<'b>(
+    upcase: bool,
+    pattern: &str,
+    command: &'b str,
+    upcase_command: &'b str,
+    url_command: &'b str,
+  ) -> &'b str {
+    if upcase && Self::is_url_pattern(pattern) {
+      url_command
+    } else if upcase {
+      upcase_command
+    } else {
+      command
+    }
+  }
+
   pub fn execute_command(&mut self) {
     let content = self.content.clone().unwrap();
     let items: Vec<&str> = content.split('\n').collect();
@@ -327,7 +354,7 @@ impl<'a> Swapper<'a> {
     if items.len() > 1 {
       let text = items
         .iter()
-        .map(|item| item.splitn(2, ':').last().unwrap())
+        .map(|item| item.splitn(3, ':').last().unwrap())
         .collect::<Vec<&str>>()
         .join(" ");
 
@@ -339,68 +366,73 @@ impl<'a> Swapper<'a> {
     // Only one item
     let item: &str = items.first().unwrap();
 
-    let mut splitter = item.splitn(2, ':');
+    let mut splitter = item.splitn(3, ':');
 
     if let Some(upcase) = splitter.next() {
-      if let Some(text) = splitter.next() {
-        if self.osc52 {
-          let base64_text = base64::encode(text.as_bytes());
-          let osc_seq = format!("\x1b]52;0;{}\x07", base64_text);
-          let tmux_seq = format!("\x1bPtmux;{}\x1b\\", osc_seq.replace("\x1b", "\x1b\x1b"));
+      if let Some(pattern) = splitter.next() {
+        if let Some(text) = splitter.next() {
+          if self.osc52 {
+            let base64_text = base64::encode(text.as_bytes());
+            let osc_seq = format!("\x1b]52;0;{}\x07", base64_text);
+            let tmux_seq = format!("\x1bPtmux;{}\x1b\\", osc_seq.replace("\x1b", "\x1b\x1b"));
 
-          // FIXME: Review if this comment is still rellevant
-          //
-          // When the user selects a match:
-          // 1. The `rustbox` object created in the `viewbox` above is dropped.
-          // 2. During its `drop`, the `rustbox` object sends a CSI 1049 escape
-          //    sequence to tmux.
-          // 3. This escape sequence causes the `window_pane_alternate_off` function
-          //    in tmux to be called.
-          // 4. In `window_pane_alternate_off`, tmux sets the needs-redraw flag in the
-          //    pane.
-          // 5. If we print the OSC copy escape sequence before the redraw is completed,
-          //    tmux will *not* send the sequence to the host terminal. See the following
-          //    call chain in tmux: `input_dcs_dispatch` -> `screen_write_rawstring`
-          //    -> `tty_write` -> `tty_client_ready`. In this case, `tty_client_ready`
-          //    will return false, thus preventing the escape sequence from being sent.
-          //
-          // Therefore, for now we wait a little bit here for the redraw to finish.
-          std::thread::sleep(std::time::Duration::from_millis(100));
+            // FIXME: Review if this comment is still rellevant
+            //
+            // When the user selects a match:
+            // 1. The `rustbox` object created in the `viewbox` above is dropped.
+            // 2. During its `drop`, the `rustbox` object sends a CSI 1049 escape
+            //    sequence to tmux.
+            // 3. This escape sequence causes the `window_pane_alternate_off` function
+            //    in tmux to be called.
+            // 4. In `window_pane_alternate_off`, tmux sets the needs-redraw flag in the
+            //    pane.
+            // 5. If we print the OSC copy escape sequence before the redraw is completed,
+            //    tmux will *not* send the sequence to the host terminal. See the following
+            //    call chain in tmux: `input_dcs_dispatch` -> `screen_write_rawstring`
+            //    -> `tty_write` -> `tty_client_ready`. In this case, `tty_client_ready`
+            //    will return false, thus preventing the sequence from being sent.
+            //
+            // Therefore, for now we wait a little bit here for the redraw to finish.
+            std::thread::sleep(std::time::Duration::from_millis(100));
 
-          std::io::stdout().write_all(tmux_seq.as_bytes()).unwrap();
-          std::io::stdout().flush().unwrap();
+            std::io::stdout().write_all(tmux_seq.as_bytes()).unwrap();
+            std::io::stdout().flush().unwrap();
+          }
+
+          let execute_command = Self::command_for_selection(
+            upcase.trim_end() == "true",
+            pattern,
+            &self.command,
+            &self.upcase_command,
+            &self.url_command,
+          )
+          .to_string();
+
+          // The command we run has two arguments:
+          //  * The first arg is the (trimmed) text. This gets stored in a variable, in order to
+          //    preserve quoting and special characters.
+          //
+          //  * The second argument is the user's command, with the '{}' token replaced with an
+          //    unquoted reference to the variable containing the text.
+          //
+          // The reference is unquoted, unfortunately, because the token may already have been
+          // spliced into a string (e.g 'tmux display-message "Copied {}"'), and it's impossible (or
+          // at least exceedingly difficult) to determine the correct quoting level.
+          //
+          // The alternative of literally splicing the text into the command is bad and it causes all
+          // kinds of harmful escaping issues that the user cannot reasonable avoid.
+          //
+          // For example, imagine some pattern matched the text "foo;rm *" and the user's command was
+          // an innocuous "echo {}". With literal splicing, we would run the command "echo foo;rm *".
+          // That's BAD. Without splicing, instead we execute "echo ${THUMB}" which does mostly the
+          // right thing regardless the contents of the text. (At worst, bash will word-separate the
+          // unquoted variable; but it won't _execute_ those words in common scenarios).
+          //
+          // Ideally user commands would just use "${THUMB}" to begin with rather than having any
+          // sort of ad-hoc string splicing here at all, and then they could specify the quoting they
+          // want, but that would break backwards compatibility.
+          self.execute_final_command(text.trim_end(), &execute_command);
         }
-
-        let execute_command = if upcase.trim_end() == "true" {
-          self.upcase_command.clone()
-        } else {
-          self.command.clone()
-        };
-
-        // The command we run has two arguments:
-        //  * The first arg is the (trimmed) text. This gets stored in a variable, in order to
-        //    preserve quoting and special characters.
-        //
-        //  * The second argument is the user's command, with the '{}' token replaced with an
-        //    unquoted reference to the variable containing the text.
-        //
-        // The reference is unquoted, unfortunately, because the token may already have been
-        // spliced into a string (e.g 'tmux display-message "Copied {}"'), and it's impossible (or
-        // at least exceedingly difficult) to determine the correct quoting level.
-        //
-        // The alternative of literally splicing the text into the command is bad and it causes all
-        // kinds of harmful escaping issues that the user cannot reasonable avoid.
-        //
-        // For example, imagine some pattern matched the text "foo;rm *" and the user's command was
-        // an innocuous "echo {}". With literal splicing, we would run the command "echo foo;rm *".
-        // That's BAD. Without splicing, instead we execute "echo ${THUMB}" which does mostly the
-        // right thing regardless the contents of the text. (At worst, bash will word-separate the
-        // unquoted variable; but it won't _execute_ those words in common scenarios).
-        //
-        // Ideally user commands would just use "${THUMB}" to begin with rather than having any
-        // sort of ad-hoc string splicing here at all, and then they could specify the quoting they
-        // want, but that would break backwards compatibility.
-        self.execute_final_command(text.trim_end(), &execute_command);
       }
     }
   }
@@ -419,6 +451,14 @@ impl<'a> Swapper<'a> {
     let params = retrieve_command.iter().map(|arg| arg.to_string()).collect();
 
     self.executor.execute(params);
+  }
+}
+
+fn default_url_command() -> &'static str {
+  if cfg!(target_os = "macos") {
+    "tmux set-buffer -- \"{}\" && open \"{}\""
+  } else {
+    "tmux set-buffer -- \"{}\""
   }
 }
 
@@ -461,6 +501,7 @@ mod tests {
       "".to_string(),
       "".to_string(),
       "".to_string(),
+      "".to_string(),
       false,
     );
 
@@ -480,6 +521,7 @@ mod tests {
     let mut executor = TestShell::new(last_command_outputs);
     let mut swapper = Swapper::new(
       Box::new(&mut executor),
+      "".to_string(),
       "".to_string(),
       "".to_string(),
       "".to_string(),
@@ -504,17 +546,19 @@ mod tests {
     let user_command = "echo \"{}\"".to_string();
     let upcase_command = "open \"{}\"".to_string();
     let multi_command = "open \"{}\"".to_string();
+    let url_command = "open \"{}\"".to_string();
     let mut swapper = Swapper::new(
       Box::new(&mut executor),
       "".to_string(),
       user_command,
       upcase_command,
       multi_command,
+      url_command,
       false,
     );
 
     swapper.content = Some(format!(
-      "{do_upcase}:{thumb_text}",
+      "{do_upcase}:path:{thumb_text}",
       do_upcase = false,
       thumb_text = "foobar;rm *",
     ));
@@ -533,6 +577,90 @@ mod tests {
       // $2: The user script, with {} replaced with ${THUMB},
       //     and will be eval'd with THUMB in scope.
       "echo \"${THUMB}\"",
+    ];
+
+    assert_eq!(executor.last_executed().unwrap(), expectation);
+  }
+
+  #[test]
+  fn uppercase_url_uses_url_command() {
+    assert_eq!(
+      Swapper::command_for_selection(true, "url", "copy", "upcase", "copy-and-open"),
+      "copy-and-open"
+    );
+    assert_eq!(
+      Swapper::command_for_selection(true, "markdown_url", "copy", "upcase", "copy-and-open"),
+      "copy-and-open"
+    );
+    assert_eq!(
+      Swapper::command_for_selection(true, "url_custom", "copy", "upcase", "copy-and-open"),
+      "copy-and-open"
+    );
+  }
+
+  #[test]
+  fn uppercase_url_copies_and_opens_with_quoted_value() {
+    let mut executor = TestShell::new(vec!["".to_string()]);
+    let mut swapper = Swapper::new(
+      Box::new(&mut executor),
+      "".to_string(),
+      "copy \"{}\"".to_string(),
+      "upcase \"{}\"".to_string(),
+      "multi \"{}\"".to_string(),
+      "tmux set-buffer -- \"{}\" && open \"{}\"".to_string(),
+      false,
+    );
+
+    swapper.content = Some("true:url:https://example.com/a;not-a-command".to_string());
+    swapper.execute_command();
+
+    let expectation = vec![
+      "bash",
+      "-c",
+      "THUMB=\"$1\"; eval \"$2\"",
+      "--",
+      "https://example.com/a;not-a-command",
+      "tmux set-buffer -- \"${THUMB}\" && open \"${THUMB}\"",
+    ];
+
+    assert_eq!(executor.last_executed().unwrap(), expectation);
+  }
+
+  #[test]
+  fn non_url_selection_preserves_copy_commands() {
+    assert_eq!(
+      Swapper::command_for_selection(false, "url", "copy", "upcase", "copy-and-open"),
+      "copy"
+    );
+    assert_eq!(
+      Swapper::command_for_selection(true, "path", "copy", "upcase", "copy-and-open"),
+      "upcase"
+    );
+  }
+
+  #[test]
+  fn multi_selection_uses_multi_command() {
+    let mut executor = TestShell::new(vec!["".to_string()]);
+    let mut swapper = Swapper::new(
+      Box::new(&mut executor),
+      "".to_string(),
+      "copy {}".to_string(),
+      "upcase {}".to_string(),
+      "multi {}".to_string(),
+      "copy-and-open {}".to_string(),
+      false,
+    );
+
+    swapper.content = Some("false:url:https://example.com\nfalse:path:/tmp/example".to_string());
+    swapper.execute_command();
+
+    let expectation = vec![
+      "bash",
+      "-c",
+      "THUMB=\"$1\"; eval \"$2\"",
+      "--",
+      "https://example.com /tmp/example",
+      "multi ${THUMB}",
     ];
 
     assert_eq!(executor.last_executed().unwrap(), expectation);
@@ -568,6 +696,12 @@ fn app_args<'a>() -> clap::ArgMatches<'a> {
         .default_value("tmux set-buffer -- \"{}\" && tmux paste-buffer && tmux display-message \"Multi copied {}\""),
     )
     .arg(
+      Arg::with_name("url_command")
+        .help("Command to execute for an uppercase URL hint")
+        .long("url-command")
+        .default_value(default_url_command()),
+    )
+    .arg(
       Arg::with_name("osc52")
         .help("Print OSC52 copy escape sequence in addition to running the pick command")
         .long("osc52")
@@ -582,6 +716,7 @@ fn main() -> std::io::Result<()> {
   let command = args.value_of("command").unwrap();
   let upcase_command = args.value_of("upcase_command").unwrap();
   let multi_command = args.value_of("multi_command").unwrap();
+  let url_command = args.value_of("url_command").unwrap();
   let osc52 = args.is_present("osc52");
 
   if dir.is_empty() {
@@ -595,6 +730,7 @@ fn main() -> std::io::Result<()> {
     command.to_string(),
     upcase_command.to_string(),
     multi_command.to_string(),
+    url_command.to_string(),
     osc52,
   );
 

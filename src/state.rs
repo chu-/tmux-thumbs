@@ -6,7 +6,10 @@ const EXCLUDE_PATTERNS: [(&'static str, &'static str); 1] = [("bash", r"[[:cntrl
 
 const PATTERNS: [(&'static str, &'static str); 15] = [
   ("markdown_url", r"\[[^]]*\]\(([^)]+)\)"),
-  ("url", r"(?P<match>(https?://|git@|git://|ssh://|ftp://|file:///)[^ ]+)"),
+  (
+    "url",
+    r"(?P<match>(https?://|git@|git://|ssh://|ftp://|file://)[^ \t\r\n\x27\x22\x29\x5D\x3E]+)",
+  ),
   (
     "diff_summary",
     r"diff --git a/([.\w\-@~\[\]]+?/[.\w\-@\[\]]++) b/([.\w\-@~\[\]]+?/[.\w\-@\[\]]++)",
@@ -58,6 +61,7 @@ pub struct State<'a> {
   pub lines: &'a Vec<&'a str>,
   alphabet: &'a str,
   regexp: &'a Vec<&'a str>,
+  url_regexp: Vec<String>,
 }
 
 impl<'a> State<'a> {
@@ -66,7 +70,12 @@ impl<'a> State<'a> {
       lines,
       alphabet,
       regexp,
+      url_regexp: vec![],
     }
+  }
+
+  pub fn set_url_regexp(&mut self, regexp: &[&str]) {
+    self.url_regexp = regexp.iter().map(|value| value.to_string()).collect();
   }
 
   pub fn matches(&self, reverse: bool, unique: bool) -> Vec<Match<'a>> {
@@ -82,6 +91,11 @@ impl<'a> State<'a> {
       .iter()
       .map(|regexp| ("custom", Regex::new(regexp).expect("Invalid custom regexp")))
       .collect::<Vec<_>>();
+    let custom_url_patterns = self
+      .url_regexp
+      .iter()
+      .map(|regexp| ("url_custom", Regex::new(regexp).expect("Invalid custom URL regexp")))
+      .collect::<Vec<_>>();
 
     let patterns = PATTERNS
       .iter()
@@ -89,7 +103,7 @@ impl<'a> State<'a> {
       .collect::<Vec<_>>();
 
     // This order determines the priority of pattern matching
-    let all_patterns = [exclude_patterns, custom_patterns, patterns].concat();
+    let all_patterns = [exclude_patterns, custom_url_patterns, custom_patterns, patterns].concat();
 
     for (index, line) in self.lines.iter().enumerate() {
       let mut chunk: &str = line;
@@ -367,6 +381,33 @@ mod tests {
     assert_eq!(results.get(2).unwrap().pattern.clone(), "url");
     assert_eq!(results.get(3).unwrap().text.clone(), "ssh://github.io");
     assert_eq!(results.get(3).unwrap().pattern.clone(), "url");
+  }
+
+  #[test]
+  fn match_urls_without_surrounding_quotes() {
+    let lines = split("'https://example.com' \"https://example.org/path\"");
+    let custom = [].to_vec();
+    let results = State::new(&lines, "abcd", &custom).matches(false, false);
+
+    assert_eq!(results.len(), 2);
+    assert_eq!(results.get(0).unwrap().text, "https://example.com");
+    assert_eq!(results.get(1).unwrap().text, "https://example.org/path");
+  }
+
+  #[test]
+  fn match_file_and_custom_urls() {
+    let lines = split("file:///tmp/example notes://project/123");
+    let custom = [].to_vec();
+    let url_custom = ["notes://[^ ]+"].to_vec();
+    let mut state = State::new(&lines, "abcd", &custom);
+    state.set_url_regexp(&url_custom);
+    let results = state.matches(false, false);
+
+    assert_eq!(results.len(), 2);
+    assert_eq!(results.get(0).unwrap().text, "file:///tmp/example");
+    assert_eq!(results.get(0).unwrap().pattern, "url");
+    assert_eq!(results.get(1).unwrap().text, "notes://project/123");
+    assert_eq!(results.get(1).unwrap().pattern, "url_custom");
   }
 
   #[test]
