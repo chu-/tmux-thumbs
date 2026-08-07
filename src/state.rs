@@ -200,6 +200,49 @@ impl<'a> State<'a> {
 
     matches
   }
+
+  pub fn character_matches(&self, character: char, reverse: bool, start: Option<(usize, usize)>) -> Vec<Match<'a>> {
+    let mut matches = Vec::new();
+
+    for (y, line) in self.lines.iter().enumerate() {
+      for (x, value) in line.char_indices() {
+        let is_in_direction = start.map_or(true, |(start_x, start_y)| {
+          if reverse {
+            y < start_y || (y == start_y && x <= start_x)
+          } else {
+            y > start_y || (y == start_y && x >= start_x)
+          }
+        });
+        if value == character && is_in_direction {
+          matches.push(Match {
+            x: x as i32,
+            y: y as i32,
+            pattern: "character",
+            text: &line[x..x + value.len_utf8()],
+            hint: None,
+          });
+        }
+      }
+    }
+
+    let alphabet = super::alphabets::get_alphabet(self.alphabet);
+    let mut hints = alphabet.hints(matches.len());
+
+    if reverse {
+      matches.reverse();
+      hints.reverse();
+    } else {
+      hints.reverse();
+    }
+
+    for mat in &mut matches {
+      if let Some(hint) = hints.pop() {
+        mat.hint = Some(hint.to_string());
+      }
+    }
+
+    matches
+  }
 }
 
 #[cfg(test)]
@@ -408,6 +451,48 @@ mod tests {
     assert_eq!(results.get(0).unwrap().pattern, "url");
     assert_eq!(results.get(1).unwrap().text, "notes://project/123");
     assert_eq!(results.get(1).unwrap().pattern, "url_custom");
+  }
+
+  #[test]
+  fn match_characters_with_byte_and_row_coordinates() {
+    let lines = split("écho café\nrow café");
+    let custom = [].to_vec();
+    let state = State::new(&lines, "abcd", &custom);
+    let results = state.character_matches('c', false, None);
+
+    assert_eq!(results.len(), 3);
+    assert_eq!(results.get(0).unwrap().text, "c");
+    assert_eq!(results.get(0).unwrap().x, 2);
+    assert_eq!(results.get(0).unwrap().y, 0);
+    assert_eq!(results.get(1).unwrap().x, 6);
+    assert_eq!(results.get(1).unwrap().y, 0);
+    assert_eq!(results.get(2).unwrap().x, 4);
+    assert_eq!(results.get(2).unwrap().y, 1);
+  }
+
+  #[test]
+  fn match_characters_in_reverse_order() {
+    let lines = split("one two three");
+    let custom = [].to_vec();
+    let state = State::new(&lines, "abcd", &custom);
+    let results = state.character_matches('o', true, None);
+
+    assert_eq!(results.len(), 2);
+    assert_eq!(results.get(0).unwrap().x, 6);
+    assert_eq!(results.get(1).unwrap().x, 0);
+  }
+
+  #[test]
+  fn character_matches_start_at_cursor_and_search_backward() {
+    let lines = split("abc abc");
+    let custom = [].to_vec();
+    let state = State::new(&lines, "abcd", &custom);
+
+    let forward = state.character_matches('a', false, Some((1, 0)));
+    assert_eq!(forward.iter().map(|mat| mat.x).collect::<Vec<_>>(), vec![4]);
+
+    let backward = state.character_matches('a', true, Some((6, 0)));
+    assert_eq!(backward.iter().map(|mat| mat.x).collect::<Vec<_>>(), vec![4, 0]);
   }
 
   #[test]

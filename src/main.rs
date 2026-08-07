@@ -37,7 +37,7 @@ fn app_args<'a>() -> clap::ArgMatches<'a> {
     )
     .arg(
       Arg::with_name("format")
-        .help("Specifies the out format for the picked hint. (%U: Upcase, %H: Hint, %P: Pattern)")
+        .help("Specifies the out format for the picked hint. (%U: Upcase, %P: Pattern, %X: Column, %Y: Row, %H: Hint)")
         .long("format")
         .short("f")
         .default_value("%H"),
@@ -131,6 +131,34 @@ fn app_args<'a>() -> clap::ArgMatches<'a> {
         .multiple(true),
     )
     .arg(
+      Arg::with_name("character")
+        .help("Match this character instead of the built-in patterns")
+        .long("character")
+        .takes_value(true),
+    )
+    .arg(
+      Arg::with_name("jump")
+        .help("Enable cursor jump output mode")
+        .long("jump"),
+    )
+    .arg(
+      Arg::with_name("backward")
+        .help("Search character matches in reverse order")
+        .long("backward"),
+    )
+    .arg(
+      Arg::with_name("start_x")
+        .help("Starting cursor column for character search")
+        .long("start-x")
+        .takes_value(true),
+    )
+    .arg(
+      Arg::with_name("start_y")
+        .help("Starting cursor row for character search")
+        .long("start-y")
+        .takes_value(true),
+    )
+    .arg(
       Arg::with_name("contrast")
         .help("Put square brackets around hint for visibility")
         .long("contrast")
@@ -163,6 +191,19 @@ fn main() {
   let reverse = args.is_present("reverse");
   let unique = args.is_present("unique");
   let contrast = args.is_present("contrast");
+  let start = match (args.value_of("start_x"), args.value_of("start_y")) {
+    (Some(x), Some(y)) => Some((x.parse().expect("Invalid start column"), y.parse().expect("Invalid start row"))),
+    (None, None) => None,
+    _ => panic!("Character search requires both start-x and start-y"),
+  };
+  let character = args.value_of("character").map(|value| {
+    let mut characters = value.chars();
+    let character = characters.next().expect("Character search cannot be empty");
+    if characters.next().is_some() {
+      panic!("Character search accepts exactly one character");
+    }
+    (character, args.is_present("backward"), start)
+  });
   let regexp = if let Some(items) = args.values_of("regexp") {
     items.collect::<Vec<_>>()
   } else {
@@ -200,6 +241,7 @@ fn main() {
       multi,
       reverse,
       unique,
+      character,
       contrast,
       position,
       select_foreground_color,
@@ -225,6 +267,8 @@ fn main() {
 
         output = str::replace(&output, "%U", upcase_value);
         output = str::replace(&output, "%P", selection.pattern.as_str());
+        output = str::replace(&output, "%X", &selection.x.to_string());
+        output = str::replace(&output, "%Y", &selection.y.to_string());
         output = str::replace(&output, "%H", selection.text.as_str());
         output
       })

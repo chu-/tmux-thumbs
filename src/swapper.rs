@@ -62,8 +62,13 @@ pub struct Swapper<'a> {
   upcase_command: String,
   multi_command: String,
   url_command: String,
+  jump: bool,
+  character: Option<String>,
+  backward: bool,
   osc52: bool,
   active_pane_id: Option<String>,
+  active_pane_in_mode: bool,
+  active_pane_cursor: Option<(i32, i32)>,
   active_pane_height: Option<i32>,
   active_pane_scroll_position: Option<i32>,
   active_pane_zoomed: Option<bool>,
@@ -81,6 +86,9 @@ impl<'a> Swapper<'a> {
     upcase_command: String,
     multi_command: String,
     url_command: String,
+    jump: bool,
+    character: Option<String>,
+    backward: bool,
     osc52: bool,
   ) -> Swapper {
     let since_the_epoch = SystemTime::now()
@@ -96,8 +104,13 @@ impl<'a> Swapper<'a> {
       upcase_command,
       multi_command,
       url_command,
+      jump,
+      character,
+      backward,
       osc52,
       active_pane_id: None,
+      active_pane_in_mode: false,
+      active_pane_cursor: None,
       active_pane_height: None,
       active_pane_scroll_position: None,
       active_pane_zoomed: None,
@@ -132,6 +145,34 @@ impl<'a> Swapper<'a> {
 
     self.active_pane_id = Some(pane_id.to_string());
 
+    if self.jump {
+      if active_pane.get(1).unwrap() != &"1" {
+        self.executor.execute(vec![
+          "tmux".to_string(),
+          "copy-mode".to_string(),
+          "-t".to_string(),
+          pane_id.to_string(),
+        ]);
+      }
+
+      self.active_pane_in_mode = true;
+
+      let cursor = self.executor.execute(vec![
+        "tmux".to_string(),
+        "display-message".to_string(),
+        "-p".to_string(),
+        "-t".to_string(),
+        pane_id.to_string(),
+        "#{copy_cursor_x}:#{copy_cursor_y}".to_string(),
+      ]);
+      let cursor: Vec<i32> = cursor
+        .trim()
+        .split(':')
+        .map(|value| value.parse().expect("Unable to retrieve copy cursor position"))
+        .collect();
+      self.active_pane_cursor = Some((*cursor.get(0).unwrap(), *cursor.get(1).unwrap()));
+    }
+
     let pane_height = active_pane
       .get(2)
       .unwrap()
@@ -140,7 +181,9 @@ impl<'a> Swapper<'a> {
 
     self.active_pane_height = Some(pane_height);
 
-    if active_pane.get(1).unwrap().to_string() == "1" {
+    self.active_pane_in_mode = self.active_pane_in_mode || active_pane.get(1).unwrap() == &"1";
+
+    if self.active_pane_in_mode {
       let pane_scroll_position = active_pane
         .get(3)
         .unwrap()
@@ -224,8 +267,24 @@ impl<'a> Swapper<'a> {
       "".to_string()
     };
 
+    let jump_args = if self.jump {
+      let character_arg = self
+        .character
+        .as_ref()
+        .map(|value| format!(" --character {}", shell_quote(value)))
+        .unwrap_or_else(|| "".to_string());
+      let backward_arg = if self.backward { " --backward" } else { "" };
+      let start_arg = self.character.as_ref().map(|_| {
+        let (x, y) = self.active_pane_cursor.unwrap();
+        format!(" --start-x {} --start-y {}", x, y)
+      }).unwrap_or_else(|| "".to_string());
+      format!(" --jump{}{}{}", character_arg, backward_arg, start_arg)
+    } else {
+      "".to_string()
+    };
+
     let pane_command = format!(
-        "tmux capture-pane -J -t {active_pane_id} -p{scroll_params} | tail -n {height} | {dir}/target/release/thumbs --ready-signal {ready_signal} -f '%U:%P:%H' -t {tmp} {args}; tmux swap-pane -t {active_pane_id}; {zoom_command} tmux wait-for -S {signal}",
+        "tmux capture-pane -J -t {active_pane_id} -p{scroll_params} | tail -n {height} | {dir}/target/release/thumbs --ready-signal {ready_signal} -f '%U:%P:%X:%Y:%H' -t {tmp} {args}{jump_args}; tmux swap-pane -t {active_pane_id}; {zoom_command} tmux wait-for -S {signal}",
         active_pane_id = active_pane_id,
         scroll_params = scroll_params,
         height = self.active_pane_height.unwrap_or(i32::MAX),
@@ -233,6 +292,7 @@ impl<'a> Swapper<'a> {
         tmp = TMP_FILE,
         ready_signal = self.ready_signal,
         args = args.join(" "),
+        jump_args = jump_args,
         zoom_command = zoom_command,
         signal = self.signal
     );
@@ -347,14 +407,75 @@ impl<'a> Swapper<'a> {
     }
   }
 
+  fn cursor_delta(from: i32, to: i32, positive: &'static str, negative: &'static str) -> Option<(&'static str, i32)> {
+    if to > from {
+      Some((positive, to - from))
+    } else if to < from {
+      Some((negative, from - to))
+    } else {
+      None
+    }
+  }
+
+  fn shell_cursor_command(pane_id: &str, count: i32, direction: &str) -> Vec<String> {
+    vec![
+      "bash".to_string(),
+      "-c".to_string(),
+      "tmux send-keys -t \"$1\" -X -N \"$2\" \"$3\" || for ((i=0; i<$2; i++)); do tmux send-keys -t \"$1\" -X \"$3\"; done".to_string(),
+      "--".to_string(),
+      pane_id.to_string(),
+      count.to_string(),
+      direction.to_string(),
+    ]
+  }
+
+  fn move_cursor_to(&mut self, x: i32, y: i32) {
+    let pane_id = self.active_pane_id.clone().unwrap();
+    let (current_x, current_y) = self.active_pane_cursor.unwrap();
+
+    if let Some((direction, count)) = Self::cursor_delta(current_y, y, "cursor-down", "cursor-up") {
+      self.executor.execute(Self::shell_cursor_command(&pane_id, count, direction));
+    }
+
+    let current_position = self.executor.execute(vec![
+      "tmux".to_string(),
+      "display-message".to_string(),
+      "-p".to_string(),
+      "-t".to_string(),
+      pane_id.clone(),
+      "#{copy_cursor_x}:#{copy_cursor_y}".to_string(),
+    ]);
+    let current_position: Vec<i32> = current_position
+      .trim()
+      .split(':')
+      .map(|value| value.parse().expect("Unable to retrieve copy cursor position"))
+      .collect();
+    let current_x = *current_position.get(0).unwrap_or(&current_x);
+
+    if let Some((direction, count)) = Self::cursor_delta(current_x, x, "cursor-right", "cursor-left") {
+      self.executor.execute(Self::shell_cursor_command(&pane_id, count, direction));
+    }
+  }
+
   pub fn execute_command(&mut self) {
     let content = self.content.clone().unwrap();
     let items: Vec<&str> = content.split('\n').collect();
 
+    if self.jump {
+      let item = items.first().unwrap();
+      let mut splitter = item.splitn(5, ':');
+      splitter.next();
+      splitter.next();
+      let x = splitter.next().unwrap().parse().expect("Invalid jump column");
+      let y = splitter.next().unwrap().parse().expect("Invalid jump row");
+      self.move_cursor_to(x, y);
+      return;
+    }
+
     if items.len() > 1 {
       let text = items
         .iter()
-        .map(|item| item.splitn(3, ':').last().unwrap())
+        .map(|item| item.splitn(5, ':').last().unwrap())
         .collect::<Vec<&str>>()
         .join(" ");
 
@@ -366,11 +487,13 @@ impl<'a> Swapper<'a> {
     // Only one item
     let item: &str = items.first().unwrap();
 
-    let mut splitter = item.splitn(3, ':');
+    let mut splitter = item.splitn(5, ':');
 
     if let Some(upcase) = splitter.next() {
       if let Some(pattern) = splitter.next() {
-        if let Some(text) = splitter.next() {
+        if let Some(_x) = splitter.next() {
+          if let Some(_y) = splitter.next() {
+            if let Some(text) = splitter.next() {
           if self.osc52 {
             let base64_text = base64::encode(text.as_bytes());
             let osc_seq = format!("\x1b]52;0;{}\x07", base64_text);
@@ -431,7 +554,9 @@ impl<'a> Swapper<'a> {
           // Ideally user commands would just use "${THUMB}" to begin with rather than having any
           // sort of ad-hoc string splicing here at all, and then they could specify the quoting they
           // want, but that would break backwards compatibility.
-          self.execute_final_command(text.trim_end(), &execute_command);
+              self.execute_final_command(text.trim_end(), &execute_command);
+            }
+          }
         }
       }
     }
@@ -462,19 +587,23 @@ fn default_url_command() -> &'static str {
   }
 }
 
+fn shell_quote(value: &str) -> String {
+  format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
 
   struct TestShell {
     outputs: Vec<String>,
-    executed: Option<Vec<String>>,
+    executed: Vec<Vec<String>>,
   }
 
   impl TestShell {
     fn new(outputs: Vec<String>) -> TestShell {
       TestShell {
-        executed: None,
+        executed: vec![],
         outputs,
       }
     }
@@ -482,12 +611,12 @@ mod tests {
 
   impl Executor for TestShell {
     fn execute(&mut self, args: Vec<String>) -> String {
-      self.executed = Some(args);
+      self.executed.push(args);
       self.outputs.pop().unwrap()
     }
 
     fn last_executed(&self) -> Option<Vec<String>> {
-      self.executed.clone()
+      self.executed.last().cloned()
     }
   }
 
@@ -502,6 +631,9 @@ mod tests {
       "".to_string(),
       "".to_string(),
       "".to_string(),
+      false,
+      None,
+      false,
       false,
     );
 
@@ -526,6 +658,9 @@ mod tests {
       "".to_string(),
       "".to_string(),
       "".to_string(),
+      false,
+      None,
+      false,
       false,
     );
 
@@ -555,10 +690,13 @@ mod tests {
       multi_command,
       url_command,
       false,
+      None,
+      false,
+      false,
     );
 
     swapper.content = Some(format!(
-      "{do_upcase}:path:{thumb_text}",
+      "{do_upcase}:path:0:0:{thumb_text}",
       do_upcase = false,
       thumb_text = "foobar;rm *",
     ));
@@ -609,9 +747,12 @@ mod tests {
       "multi \"{}\"".to_string(),
       "tmux set-buffer -- \"{}\" && open \"{}\"".to_string(),
       false,
+      None,
+      false,
+      false,
     );
 
-    swapper.content = Some("true:url:https://example.com/a;not-a-command".to_string());
+    swapper.content = Some("true:url:0:0:https://example.com/a;not-a-command".to_string());
     swapper.execute_command();
 
     let expectation = vec![
@@ -639,6 +780,48 @@ mod tests {
   }
 
   #[test]
+  fn cursor_delta_selects_direction_and_count() {
+    assert_eq!(
+      Swapper::cursor_delta(2, 5, "cursor-down", "cursor-up"),
+      Some(("cursor-down", 3))
+    );
+    assert_eq!(
+      Swapper::cursor_delta(5, 2, "cursor-right", "cursor-left"),
+      Some(("cursor-left", 3))
+    );
+    assert_eq!(Swapper::cursor_delta(4, 4, "positive", "negative"), None);
+  }
+
+  #[test]
+  fn jump_selection_moves_vertically_then_uses_refreshed_column() {
+    let mut executor = TestShell::new(vec!["".to_string(), "2:2".to_string(), "".to_string()]);
+    let mut swapper = Swapper::new(
+      Box::new(&mut executor),
+      "".to_string(),
+      "copy {}".to_string(),
+      "upcase {}".to_string(),
+      "multi {}".to_string(),
+      "url {}".to_string(),
+      true,
+      Some("x".to_string()),
+      false,
+      false,
+    );
+    swapper.active_pane_id = Some("%1".to_string());
+    swapper.active_pane_cursor = Some((0, 0));
+    swapper.content = Some("false:character:5:2:x".to_string());
+
+    swapper.execute_command();
+
+    assert_eq!(executor.executed.len(), 3);
+    assert_eq!(executor.executed.get(0).unwrap().get(5).unwrap(), "2");
+    assert_eq!(executor.executed.get(0).unwrap().get(6).unwrap(), "cursor-down");
+    assert_eq!(executor.executed.get(1).unwrap().get(0).unwrap(), "tmux");
+    assert_eq!(executor.executed.get(2).unwrap().get(5).unwrap(), "3");
+    assert_eq!(executor.executed.get(2).unwrap().get(6).unwrap(), "cursor-right");
+  }
+
+  #[test]
   fn multi_selection_uses_multi_command() {
     let mut executor = TestShell::new(vec!["".to_string()]);
     let mut swapper = Swapper::new(
@@ -649,9 +832,12 @@ mod tests {
       "multi {}".to_string(),
       "copy-and-open {}".to_string(),
       false,
+      None,
+      false,
+      false,
     );
 
-    swapper.content = Some("false:url:https://example.com\nfalse:path:/tmp/example".to_string());
+    swapper.content = Some("false:url:0:0:https://example.com\nfalse:path:0:0:/tmp/example".to_string());
     swapper.execute_command();
 
     let expectation = vec![
@@ -702,6 +888,22 @@ fn app_args<'a>() -> clap::ArgMatches<'a> {
         .default_value(default_url_command()),
     )
     .arg(
+      Arg::with_name("jump")
+        .help("Move the copy-mode cursor to the selected match")
+        .long("jump"),
+    )
+    .arg(
+      Arg::with_name("character")
+        .help("Pass a character search to thumbs")
+        .long("character")
+        .takes_value(true),
+    )
+    .arg(
+      Arg::with_name("backward")
+        .help("Search character matches in reverse order")
+        .long("backward"),
+    )
+    .arg(
       Arg::with_name("osc52")
         .help("Print OSC52 copy escape sequence in addition to running the pick command")
         .long("osc52")
@@ -717,6 +919,9 @@ fn main() -> std::io::Result<()> {
   let upcase_command = args.value_of("upcase_command").unwrap();
   let multi_command = args.value_of("multi_command").unwrap();
   let url_command = args.value_of("url_command").unwrap();
+  let jump = args.is_present("jump");
+  let character = args.value_of("character").map(|value| value.to_string());
+  let backward = args.is_present("backward");
   let osc52 = args.is_present("osc52");
 
   if dir.is_empty() {
@@ -731,6 +936,9 @@ fn main() -> std::io::Result<()> {
     upcase_command.to_string(),
     multi_command.to_string(),
     url_command.to_string(),
+    jump,
+    character,
+    backward,
     osc52,
   );
 

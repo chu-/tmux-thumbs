@@ -29,13 +29,15 @@ function get-opt-arg() {
   if [ "${type}" = string ]; then
     [ -n "${value}" ] && echo "--${opt}=${value}"
   elif [ "${type}" = boolean ]; then
-    [ "${value}" = 1 ] && echo "--${opt}"
+    case "${value}" in
+      1|on|yes|true|enabled) echo "--${opt}" ;;
+    esac
   else
     return 1
   fi
 }
 
-PARAMS=(--dir "${CURRENT_DIR}")
+PARAMS=(--dir "${CURRENT_DIR}" "$@")
 
 function add-param() {
   local type opt arg
@@ -49,6 +51,7 @@ add-param command        string
 add-param upcase-command string
 add-param multi-command  string
 add-param url-command    string
+add-param jump            boolean
 add-param osc52          boolean
 
 "${TMUX_THUMBS_BINARY}" "${PARAMS[@]}" || true

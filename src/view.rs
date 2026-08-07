@@ -16,6 +16,8 @@ pub struct Chosen {
   pub text: String,
   pub upcase: bool,
   pub pattern: String,
+  pub x: usize,
+  pub y: usize,
 }
 
 pub struct View<'a> {
@@ -47,6 +49,7 @@ impl<'a> View<'a> {
     multi: bool,
     reverse: bool,
     unique: bool,
+    character: Option<(char, bool, Option<(usize, usize)>)>,
     contrast: bool,
     position: &'a str,
     select_foreground_color: Box<dyn color::Color>,
@@ -58,8 +61,12 @@ impl<'a> View<'a> {
     hint_foreground_color: Box<dyn color::Color>,
     hint_background_color: Box<dyn color::Color>,
   ) -> View<'a> {
-    let matches = state.matches(reverse, unique);
-    let skip = if reverse { matches.len() - 1 } else { 0 };
+    let matches = if let Some((character, character_reverse, start)) = character {
+      state.character_matches(character, character_reverse, start)
+    } else {
+      state.matches(reverse, unique)
+    };
+    let skip = if reverse { matches.len().saturating_sub(1) } else { 0 };
 
     View {
       state,
@@ -100,12 +107,21 @@ impl<'a> View<'a> {
     }
   }
 
-  fn choose(&mut self, text: String, pattern: String, upcase: bool) {
+  fn choose(&mut self, text: String, pattern: String, x: i32, y: i32, upcase: bool) {
+    let line = &self.state.lines[y as usize];
+    let column = Self::display_column(line, x as usize);
+
     self.chosen.push(Chosen {
       text,
       upcase,
       pattern,
+      x: column,
+      y: y as usize,
     });
+  }
+
+  fn display_column(line: &str, byte_offset: usize) -> usize {
+    line[..byte_offset].width()
   }
 
   fn render(&self, stdout: &mut dyn Write, typed_hint: &str) -> () {
@@ -139,11 +155,8 @@ impl<'a> View<'a> {
         &self.background_color
       };
 
-      // Find long utf sequences and extract it from mat.x
       let line = &self.state.lines[mat.y as usize];
-      let prefix = &line[0..mat.x as usize];
-      let extra = prefix.width_cjk() - prefix.chars().count();
-      let offset = (mat.x as u16) - (extra as u16);
+      let offset = Self::display_column(line, mat.x as usize) as u16;
       let text = self.make_hint_text(mat.text);
 
       print!(
@@ -260,7 +273,7 @@ impl<'a> View<'a> {
                       Some(hm) => {
                         let text = hm.1.text.to_string();
                         let pattern = hm.1.pattern.to_string();
-                        self.choose(text, pattern, false);
+                        self.choose(text, pattern, hm.1.x, hm.1.y, false);
 
                         if !self.multi {
                           return CaptureEvent::Hint;
@@ -289,7 +302,7 @@ impl<'a> View<'a> {
                         Some(mat) => {
                           let text = mat.text.to_string();
                           let pattern = mat.pattern.to_string();
-                          self.choose(text, pattern, key != lower_key);
+                          self.choose(text, pattern, mat.x, mat.y, key != lower_key);
 
                           if self.multi {
                             typed_hint.clear();
@@ -381,5 +394,11 @@ mod tests {
     view.contrast = true;
     let result = view.make_hint_text("a");
     assert_eq!(result, "[a]".to_string());
+  }
+
+  #[test]
+  fn display_column_handles_unicode_width() {
+    assert_eq!(View::display_column("écho", 2), 1);
+    assert_eq!(View::display_column("你a", 3), 2);
   }
 }

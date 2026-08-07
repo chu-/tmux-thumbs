@@ -88,6 +88,7 @@ parameters to set your perfect profile.
 NOTE: for changes to take effect, you'll need to source again your `.tmux.conf` file.
 
 * [@thumbs-key](#thumbs-key)
+* [@thumbs-jump](#thumbs-jump)
 * [@thumbs-alphabet](#thumbs-alphabet)
 * [@thumbs-reverse](#thumbs-reverse)
 * [@thumbs-unique](#thumbs-unique)
@@ -127,6 +128,32 @@ bind whatever key to `thumbs-pick` command. For example:
 ```
 bind-key \; thumbs-pick
 ```
+
+### @thumbs-jump
+
+`default: disabled`
+
+When enabled, selecting a hint moves the tmux copy-mode cursor to the selected
+match instead of running a copy or URL command. The selected coordinates are
+calculated in Rust and cursor movement is sent to tmux in batches.
+
+For example:
+
+```
+set -g @thumbs-jump on
+```
+
+Character jumping can be started from copy-mode with a binding such as:
+
+```
+bind-key -T copy-mode-vi f command-prompt -1 -p "character:" {
+  set-option -g @tmp-thumbs-character "%%%"
+  run-shell -b '~/.tmux/plugins/tmux-thumbs/tmux-thumbs.sh --jump --character #{q:@tmp-thumbs-character}'
+}
+```
+
+Use `--backward` for a reverse character search. Existing copy/open behavior is
+unchanged when jump mode is disabled.
 
 ### @thumbs-alphabet
 
@@ -486,12 +513,15 @@ OPTIONS:
         --bg-color <background_color>                  Sets the background color for matches [default: black]
         --fg-color <foreground_color>                  Sets the foregroud color for matches [default: green]
     -f, --format <format>
-            Specifies the out format for the picked hint. (%U: Upcase, %H: Hint, %P: Pattern) [default: %H]
+            Specifies the out format for the picked hint. (%U: Upcase, %P: Pattern, %X: Column, %Y: Row, %H: Hint) [default: %H]
 
         --hint-bg-color <hint_background_color>        Sets the background color for hints [default: black]
         --hint-fg-color <hint_foreground_color>        Sets the foregroud color for hints [default: yellow]
     -p, --position <position>                          Hint position [default: left]
     -x, --regexp <regexp>...                           Use this regexp as extra pattern to match
+        --character <character>                        Match this character instead of the built-in patterns
+        --jump                                           Enable cursor jump output mode
+        --backward                                       Search character matches in reverse order
         --url-regexp <url_regexp>...                   Use this regexp as an extra URL pattern to match
         --select-bg-color <select_background_color>    Sets the background color for selection [default: black]
         --select-fg-color <select_foreground_color>    Sets the foreground color for selection [default: blue]
