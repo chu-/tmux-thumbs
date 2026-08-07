@@ -72,7 +72,9 @@ pub struct Swapper<'a> {
   active_pane_width: Option<i32>,
   active_pane_height: Option<i32>,
   active_pane_scroll_position: Option<i32>,
+  active_pane_history_size: Option<i32>,
   active_pane_zoomed: Option<bool>,
+  active_pane_captured_content: Option<String>,
   thumbs_pane_id: Option<String>,
   content: Option<String>,
   ready_signal: String,
@@ -115,7 +117,9 @@ impl<'a> Swapper<'a> {
       active_pane_width: None,
       active_pane_height: None,
       active_pane_scroll_position: None,
+      active_pane_history_size: None,
       active_pane_zoomed: None,
+      active_pane_captured_content: None,
       thumbs_pane_id: None,
       content: None,
       ready_signal,
@@ -149,6 +153,12 @@ impl<'a> Swapper<'a> {
     self.active_pane_id = Some(pane_id.to_string());
     self.active_pane_in_mode = active_pane_was_in_mode;
 
+    let pane_height = active_pane
+      .get(2)
+      .unwrap()
+      .parse()
+      .expect("Unable to retrieve pane height");
+
     if self.jump {
       if !active_pane_was_in_mode {
         self.executor.execute(vec![
@@ -158,6 +168,104 @@ impl<'a> Swapper<'a> {
           pane_id.to_string(),
         ]);
       }
+
+      // Use a fixed filename based on pane ID so all processes use the same capture
+      let capture_file = format!("/tmp/tmux-thumbs-capture-{}.txt", pane_id.replace("%", ""));
+      let lock_file = format!("/tmp/tmux-thumbs-capture-{}.lock", pane_id.replace("%", ""));
+      let debug_file = format!("/tmp/tmux-thumbs-debug-{}.txt", std::process::id());
+
+      // Check if capture file exists and is recent (within 300 seconds = 5 minutes)
+      let check_command = format!(
+        "if [ -f {} ] && [ $(( $(date +%s) - $(stat -f %m {} 2>/dev/null || echo 0) )) -lt 300 ]; then echo 'recent'; else echo 'old'; fi",
+        capture_file, capture_file
+      );
+      let check_result = self.executor.execute(vec!["sh".to_string(), "-c".to_string(), check_command]);
+      let should_capture = check_result.trim() != "recent";
+
+      if should_capture {
+        // Need to capture - try to get lock
+        let lock_command = format!("mkdir {} 2>/dev/null && echo 'locked' || echo 'exists'", lock_file);
+        let lock_result = self.executor.execute(vec!["sh".to_string(), "-c".to_string(), lock_command]);
+
+        if lock_result.trim() == "locked" {
+          // We got the lock, capture the buffer
+          // When in copy-mode, capture the visible window (frozen view)
+          // Use -e to capture the visible area including scrollback at current position
+          let capture_command = if active_pane_was_in_mode {
+            // Already in copy-mode: capture what's currently visible in copy-mode view
+            format!("tmux capture-pane -p -e -t {} > {}", pane_id, capture_file)
+          } else {
+            // Not in copy-mode yet: capture from scroll position 0
+            let pane_scroll_position_val: i32 = 0;
+            let scroll_params = format!("-S {} -E {}", -pane_scroll_position_val, pane_height - pane_scroll_position_val - 1);
+            format!("tmux capture-pane -p -t {} {} > {}", pane_id, scroll_params, capture_file)
+          };
+          self.executor.execute(vec!["sh".to_string(), "-c".to_string(), capture_command]);
+
+          // Debug: verify capture file was created
+          let verify_command = format!(
+            "echo 'NEW CAPTURE (was_in_mode={}, pid={}) to: {}' > {}; wc -l {} >> {}; echo 'First icmp_seq:' >> {}; grep -o 'icmp_seq=[0-9]*' {} | head -1 >> {} 2>&1 || echo 'none' >> {}; echo 'Last icmp_seq:' >> {}; grep -o 'icmp_seq=[0-9]*' {} | tail -1 >> {} 2>&1 || echo 'none' >> {}",
+            active_pane_was_in_mode,
+            std::process::id(),
+            capture_file,
+            debug_file,
+            capture_file,
+            debug_file,
+            debug_file,
+            capture_file,
+            debug_file,
+            debug_file,
+            debug_file,
+            capture_file,
+            debug_file,
+            debug_file
+          );
+          self.executor.execute(vec!["sh".to_string(), "-c".to_string(), verify_command]);
+        } else {
+          // Someone else is capturing, wait for it
+          let wait_command = format!("for i in {{1..50}}; do [ -f {} ] && break; sleep 0.02; done", capture_file);
+          self.executor.execute(vec!["sh".to_string(), "-c".to_string(), wait_command]);
+
+          let reuse_command = format!(
+            "echo 'WAITED for capture (pid={}) from: {}' > {}; wc -l {} >> {}; echo 'First icmp_seq:' >> {}; grep -o 'icmp_seq=[0-9]*' {} | head -1 >> {} 2>&1 || echo 'none' >> {}; echo 'Last icmp_seq:' >> {}; grep -o 'icmp_seq=[0-9]*' {} | tail -1 >> {} 2>&1 || echo 'none' >> {}",
+            std::process::id(),
+            capture_file,
+            debug_file,
+            capture_file,
+            debug_file,
+            debug_file,
+            capture_file,
+            debug_file,
+            debug_file,
+            debug_file,
+            capture_file,
+            debug_file,
+            debug_file
+          );
+          self.executor.execute(vec!["sh".to_string(), "-c".to_string(), reuse_command]);
+        }
+      } else {
+        // Reuse existing recent capture
+        let reuse_command = format!(
+          "echo 'REUSE CAPTURE (pid={}) from: {}' > {}; wc -l {} >> {}; echo 'First icmp_seq:' >> {}; grep -o 'icmp_seq=[0-9]*' {} | head -1 >> {} 2>&1 || echo 'none' >> {}; echo 'Last icmp_seq:' >> {}; grep -o 'icmp_seq=[0-9]*' {} | tail -1 >> {} 2>&1 || echo 'none' >> {}",
+          std::process::id(),
+          capture_file,
+          debug_file,
+          capture_file,
+          debug_file,
+          debug_file,
+          capture_file,
+          debug_file,
+          debug_file,
+          debug_file,
+          capture_file,
+          debug_file,
+          debug_file
+        );
+        self.executor.execute(vec!["sh".to_string(), "-c".to_string(), reuse_command]);
+      }
+
+      self.active_pane_captured_content = Some(capture_file);
 
       self.active_pane_in_mode = true;
 
@@ -176,12 +284,6 @@ impl<'a> Swapper<'a> {
         .collect();
       self.active_pane_cursor = Some((*cursor.get(0).unwrap(), *cursor.get(1).unwrap()));
     }
-
-    let pane_height = active_pane
-      .get(2)
-      .unwrap()
-      .parse()
-      .expect("Unable to retrieve pane height");
 
     let pane_width = active_pane
       .get(6)
@@ -209,6 +311,19 @@ impl<'a> Swapper<'a> {
       .expect("Unable to retrieve pane scroll");
 
       self.active_pane_scroll_position = Some(pane_scroll_position);
+
+      let history_size = self.executor.execute(vec![
+        "tmux".to_string(),
+        "display-message".to_string(),
+        "-p".to_string(),
+        "-t".to_string(),
+        pane_id.to_string(),
+        "#{history_size}".to_string(),
+      ])
+      .parse()
+      .expect("Unable to retrieve history size");
+
+      self.active_pane_history_size = Some(history_size);
     }
 
     let zoomed_pane = *active_pane.get(4).expect("Unable to retrieve zoom pane property") == "1";
@@ -303,7 +418,39 @@ impl<'a> Swapper<'a> {
 
     let capture_flags = if self.jump { "-p" } else { "-J -p" };
 
-    let pane_command = format!(
+    let pane_command = if self.jump && self.active_pane_captured_content.is_some() {
+      // Use pre-captured content from temp file for jump mode to avoid race conditions with live buffer
+      let capture_file = self.active_pane_captured_content.as_ref().unwrap();
+
+      // Debug log
+      let debug_file = format!("/tmp/tmux-thumbs-debug-{}.txt", std::process::id());
+      let debug_command = format!("echo 'Using pre-captured file: {}' >> {}", capture_file, debug_file);
+      self.executor.execute(vec!["sh".to_string(), "-c".to_string(), debug_command]);
+
+      // Clean up lock directory after thumbs finishes, but keep capture file for reuse
+      let lock_file = format!("/tmp/tmux-thumbs-capture-{}.lock",
+        self.active_pane_id.as_ref().unwrap().replace("%", ""));
+      format!(
+        "cat {capture_file} | tail -n {height} | {dir}/target/release/thumbs --ready-signal {ready_signal} -f '%U:%P:%X:%Y:%H' -t {tmp} {args}{jump_args}; tmux swap-pane -t {active_pane_id}; {zoom_command} tmux wait-for -S {signal}; rmdir {lock_file} 2>/dev/null || true",
+        capture_file = capture_file,
+        lock_file = lock_file,
+        height = self.active_pane_height.unwrap_or(i32::MAX),
+        dir = self.dir,
+        tmp = TMP_FILE,
+        ready_signal = self.ready_signal,
+        args = args.join(" "),
+        jump_args = jump_args,
+        active_pane_id = active_pane_id,
+        zoom_command = zoom_command,
+        signal = self.signal
+      )
+    } else {
+      // Debug log
+      let debug_file = format!("/tmp/tmux-thumbs-debug-{}.txt", std::process::id());
+      let debug_command = format!("echo 'Using live capture' >> {}", debug_file);
+      self.executor.execute(vec!["sh".to_string(), "-c".to_string(), debug_command]);
+
+      format!(
         "tmux capture-pane {capture_flags} -t {active_pane_id}{scroll_params} | tail -n {height} | {dir}/target/release/thumbs --ready-signal {ready_signal} -f '%U:%P:%X:%Y:%H' -t {tmp} {args}{jump_args}; tmux swap-pane -t {active_pane_id}; {zoom_command} tmux wait-for -S {signal}",
         capture_flags = capture_flags,
         active_pane_id = active_pane_id,
@@ -316,7 +463,8 @@ impl<'a> Swapper<'a> {
         jump_args = jump_args,
         zoom_command = zoom_command,
         signal = self.signal
-    );
+      )
+    };
 
     let thumbs_command = vec![
       "tmux",
@@ -483,30 +631,49 @@ impl<'a> Swapper<'a> {
     let pane_id = self.active_pane_id.clone().unwrap();
     let captured_scroll = self.active_pane_scroll_position.unwrap_or(0);
 
-    let current_position = self.executor.execute(vec![
+    // Read current scroll position to detect if the view has shifted
+    let current_scroll_str = self.executor.execute(vec![
       "tmux".to_string(),
       "display-message".to_string(),
       "-p".to_string(),
       "-t".to_string(),
       pane_id.clone(),
-      "#{copy_cursor_x}:#{copy_cursor_y}:#{scroll_position}".to_string(),
+      "#{scroll_position}".to_string(),
     ]);
-    let current_position: Vec<i32> = current_position
-      .trim()
-      .split(':')
-      .map(|value| value.parse().expect("Unable to retrieve copy cursor position"))
-      .collect();
-    let current_y = *current_position.get(1).expect("Unable to retrieve copy cursor row");
-    let current_scroll = *current_position.get(2).expect("Unable to retrieve copy scroll position");
-    let current_absolute_y = current_y - current_scroll;
-    let target_absolute_y = y - captured_scroll;
+    let current_scroll: i32 = current_scroll_str.trim().parse().unwrap_or(0);
 
-    if let Some((direction, count)) = Self::cursor_delta(current_absolute_y, target_absolute_y, "cursor-down", "cursor-up") {
-      self.executor.execute(Self::shell_cursor_command(&pane_id, count, direction));
+    // If scroll position changed, the view has auto-scrolled due to buffer growth.
+    // When buffer grows and fills the pane, tmux auto-scrolls up (scroll_position increases).
+    // Our captured coordinates are relative to scroll_position at capture time.
+    // We need to adjust by the scroll delta.
+    let scroll_delta = current_scroll - captured_scroll;
+
+    // Since we're using pre-captured content, the y coordinate from thumbs
+    // corresponds to the frozen view at captured_scroll position.
+    // If scroll_position increased, the view shifted up, so we need to move down.
+    let adjusted_y = y + scroll_delta;
+
+    // Move cursor to top of screen (y=0)
+    self.executor.execute(vec![
+      "tmux".to_string(),
+      "send-keys".to_string(),
+      "-t".to_string(),
+      pane_id.clone(),
+      "-X".to_string(),
+      "top-line".to_string(),
+    ]);
+
+    // Move to adjusted target row
+    if adjusted_y > 0 {
+      self.executor.execute(Self::shell_cursor_command(&pane_id, adjusted_y, "cursor-down"));
+    } else if adjusted_y < 0 {
+      self.executor.execute(Self::shell_cursor_command(&pane_id, -adjusted_y, "cursor-up"));
     }
 
+    // Move to start of line
     self.executor.execute(Self::start_of_line_command(&pane_id));
 
+    // Move to target column
     if x > 0 {
       self.executor.execute(Self::shell_cursor_command(&pane_id, x, "cursor-right"));
     }
@@ -1129,6 +1296,10 @@ fn main() -> std::io::Result<()> {
   if dir.is_empty() {
     panic!("Invalid tmux-thumbs execution. Are you trying to execute tmux-thumbs directly?")
   }
+
+  // Debug: log process start
+  let debug_file = format!("/tmp/tmux-thumbs-main-debug-{}.txt", std::process::id());
+  std::fs::write(&debug_file, format!("Process {} started with jump={} character={:?}\n", std::process::id(), jump, character)).ok();
 
   let mut executor = RealShell::new();
   let mut swapper = Swapper::new(
